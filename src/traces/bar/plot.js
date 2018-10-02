@@ -30,119 +30,49 @@ var attributes = require('./attributes'),
 // padding in pixels around text
 var TEXTPAD = 3;
 
-module.exports = function plot(gd, plotinfo, cdbar, barLayer) {
-    var xa = plotinfo.xaxis;
-    var ya = plotinfo.yaxis;
-    var fullLayout = gd._fullLayout;
+module.exports = function plot(gd, plotinfo, cdbar, barLayer, transitionOpts, makeOnCompleteCallback) {
+    var onComplete;
+    var isFullReplot = !transitionOpts;
+    var hasTransition = !!transitionOpts && transitionOpts.duration > 0;
+    var join = barLayer.selectAll('g.trace')
+        .data(cdbar, function(d) { return d[0].trace.uid; });
 
-    var bartraces = Lib.makeTraceGroups(barLayer, cdbar, 'trace bars').each(function(cd) {
-        var plotGroup = d3.select(this);
-        var cd0 = cd[0];
-        var trace = cd0.trace;
+    // Append new traces:
+    join.enter().append('g')
+        .attr('class', 'trace bars');
+    join.order();
 
-        if(!plotinfo.isRangePlot) cd0.node3 = plotGroup;
+    if(hasTransition) {
+        if(makeOnCompleteCallback) {
+            onComplete = makeOnCompleteCallback();
+        }
+        var transition = d3.transition()
+            .duration(transitionOpts.duration)
+            .ease(transitionOpts.easing)
+            .each('end', function() {
+                onComplete && onComplete();
+            })
+            .each('interrupt', function() {
+                onComplete && onComplete();
+            });
 
-        var pointGroup = Lib.ensureSingle(plotGroup, 'g', 'points');
-
-        var bars = pointGroup.selectAll('g.point').data(Lib.identity);
-
-        bars.enter().append('g')
-            .classed('point', true);
-
-        bars.exit().remove();
-
-        bars.each(function(di, i) {
-            var bar = d3.select(this);
-
-            // now display the bar
-            // clipped xf/yf (2nd arg true): non-positive
-            // log values go off-screen by plotwidth
-            // so you see them continue if you drag the plot
-            var x0, x1, y0, y1;
-            if(trace.orientation === 'h') {
-                y0 = ya.c2p(di.p0, true);
-                y1 = ya.c2p(di.p1, true);
-                x0 = xa.c2p(di.s0, true);
-                x1 = xa.c2p(di.s1, true);
-
-                // for selections
-                di.ct = [x1, (y0 + y1) / 2];
-            }
-            else {
-                x0 = xa.c2p(di.p0, true);
-                x1 = xa.c2p(di.p1, true);
-                y0 = ya.c2p(di.s0, true);
-                y1 = ya.c2p(di.s1, true);
-
-                // for selections
-                di.ct = [(x0 + x1) / 2, y1];
-            }
-
-            if(!isNumeric(x0) || !isNumeric(x1) ||
-                    !isNumeric(y0) || !isNumeric(y1) ||
-                    x0 === x1 || y0 === y1) {
-                bar.remove();
-                return;
-            }
-
-            var lw = (di.mlw + 1 || trace.marker.line.width + 1 ||
-                    (di.trace ? di.trace.marker.line.width : 0) + 1) - 1,
-                offset = d3.round((lw / 2) % 1, 2);
-
-            function roundWithLine(v) {
-                // if there are explicit gaps, don't round,
-                // it can make the gaps look crappy
-                return (fullLayout.bargap === 0 && fullLayout.bargroupgap === 0) ?
-                    d3.round(Math.round(v) - offset, 2) : v;
-            }
-
-            function expandToVisible(v, vc) {
-                // if it's not in danger of disappearing entirely,
-                // round more precisely
-                return Math.abs(v - vc) >= 2 ? roundWithLine(v) :
-                // but if it's very thin, expand it so it's
-                // necessarily visible, even if it might overlap
-                // its neighbor
-                (v > vc ? Math.ceil(v) : Math.floor(v));
-            }
-
-            if(!gd._context.staticPlot) {
-                // if bars are not fully opaque or they have a line
-                // around them, round to integer pixels, mainly for
-                // safari so we prevent overlaps from its expansive
-                // pixelation. if the bars ARE fully opaque and have
-                // no line, expand to a full pixel to make sure we
-                // can see them
-                var op = Color.opacity(di.mc || trace.marker.color),
-                    fixpx = (op < 1 || lw > 0.01) ?
-                        roundWithLine : expandToVisible;
-                x0 = fixpx(x0, x1);
-                x1 = fixpx(x1, x0);
-                y0 = fixpx(y0, y1);
-                y1 = fixpx(y1, y0);
-            }
-
-            Lib.ensureSingle(bar, 'path')
-                .style('vector-effect', 'non-scaling-stroke')
-                .attr('d',
-                    'M' + x0 + ',' + y0 + 'V' + y1 + 'H' + x1 + 'V' + y0 + 'Z')
-                .call(Drawing.setClipUrl, plotinfo.layerClipId);
-
-            appendBarText(gd, bar, cd, i, x0, x1, y0, y1);
-
-            if(plotinfo.layerClipId) {
-                Drawing.hideOutsideRangePoint(di, bar.select('text'), xa, ya, trace.xcalendar, trace.ycalendar);
-            }
+        transition.each(function() {
+            barLayer.selectAll('g.trace').each(function(d, i) {
+                plotOne(gd, i, plotinfo, d, cdbar, this, transitionOpts);
+            });
         });
-
-        // lastly, clip points groups of `cliponaxis !== false` traces
-        // on `plotinfo._hasClipOnAxisFalse === true` subplots
-        var hasClipOnAxisFalse = cd0.trace.cliponaxis === false;
-        Drawing.setClipUrl(plotGroup, hasClipOnAxisFalse ? null : plotinfo.layerClipId);
-    });
-
+    } else {
+        join.each(function(d, i) {
+            plotOne(gd, i, plotinfo, d, cdbar, this, transitionOpts);
+        });
+    }
+    if(isFullReplot) {
+        join.exit().remove();
+    }
+    // remove paths that didn't get used
+    barLayer.selectAll('path:not([d])').remove();
     // error bars are on the top
-    Registry.getComponentMethod('errorbars', 'plot')(bartraces, plotinfo);
+    Registry.getComponentMethod('errorbars', 'plot')(join, plotinfo);
 };
 
 function appendBarText(gd, bar, calcTrace, i, x0, x1, y0, y1) {
@@ -523,4 +453,117 @@ function coerceColor(attributeDefinition, value, defaultValue) {
     return (defaultValue !== undefined) ?
         defaultValue :
         attributeDefinition.dflt;
+}
+
+function plotOne(gd, idx, plotinfo, cd, cdAll, element, transitionOpts) {
+    var xa = plotinfo.xaxis;
+    var ya = plotinfo.yaxis;
+    var fullLayout = gd._fullLayout;
+    var plotGroup = d3.select(element);
+    var cd0 = cd[0];
+    var trace = cd0.trace;
+    var hasTransition = !!transitionOpts && transitionOpts.duration > 0;
+    function transition(selection) {
+        return hasTransition ? selection.transition() : selection;
+    }
+
+    if(!plotinfo.isRangePlot) cd0.node3 = plotGroup;
+
+    var pointGroup = Lib.ensureSingle(plotGroup, 'g', 'points');
+
+    var bars = pointGroup.selectAll('g.point').data(Lib.identity);
+
+    bars.enter().append('g')
+        .classed('point', true);
+
+    bars.exit().remove();
+
+    bars.each(function(di, i) {
+        var bar = d3.select(this);
+
+        // now display the bar
+        // clipped xf/yf (2nd arg true): non-positive
+        // log values go off-screen by plotwidth
+        // so you see them continue if you drag the plot
+        var x0, x1, y0, y1;
+        if(trace.orientation === 'h') {
+            y0 = ya.c2p(di.p0, true);
+            y1 = ya.c2p(di.p1, true);
+            x0 = xa.c2p(di.s0, true);
+            x1 = xa.c2p(di.s1, true);
+
+            // for selections
+            di.ct = [x1, (y0 + y1) / 2];
+        }
+        else {
+            x0 = xa.c2p(di.p0, true);
+            x1 = xa.c2p(di.p1, true);
+            y0 = ya.c2p(di.s0, true);
+            y1 = ya.c2p(di.s1, true);
+
+            // for selections
+            di.ct = [(x0 + x1) / 2, y1];
+        }
+
+        if(!isNumeric(x0) || !isNumeric(x1) ||
+                !isNumeric(y0) || !isNumeric(y1) ||
+                x0 === x1 || y0 === y1) {
+            bar.remove();
+            return;
+        }
+
+        var lw = (di.mlw + 1 || trace.marker.line.width + 1 ||
+                (di.trace ? di.trace.marker.line.width : 0) + 1) - 1,
+            offset = d3.round((lw / 2) % 1, 2);
+
+        function roundWithLine(v) {
+            // if there are explicit gaps, don't round,
+            // it can make the gaps look crappy
+            return (fullLayout.bargap === 0 && fullLayout.bargroupgap === 0) ?
+                d3.round(Math.round(v) - offset, 2) : v;
+        }
+
+        function expandToVisible(v, vc) {
+            // if it's not in danger of disappearing entirely,
+            // round more precisely
+            return Math.abs(v - vc) >= 2 ? roundWithLine(v) :
+            // but if it's very thin, expand it so it's
+            // necessarily visible, even if it might overlap
+            // its neighbor
+            (v > vc ? Math.ceil(v) : Math.floor(v));
+        }
+
+        if(!gd._context.staticPlot) {
+            // if bars are not fully opaque or they have a line
+            // around them, round to integer pixels, mainly for
+            // safari so we prevent overlaps from its expansive
+            // pixelation. if the bars ARE fully opaque and have
+            // no line, expand to a full pixel to make sure we
+            // can see them
+            var op = Color.opacity(di.mc || trace.marker.color),
+                fixpx = (op < 1 || lw > 0.01) ?
+                    roundWithLine : expandToVisible;
+            x0 = fixpx(x0, x1);
+            x1 = fixpx(x1, x0);
+            y0 = fixpx(y0, y1);
+            y1 = fixpx(y1, y0);
+        }
+
+        transition(Lib.ensureSingle(bar, 'path'))
+            .style('vector-effect', 'non-scaling-stroke')
+            .attr('d',
+                'M' + x0 + ',' + y0 + 'V' + y1 + 'H' + x1 + 'V' + y0 + 'Z')
+            .call(Drawing.setClipUrl, plotinfo.layerClipId);
+
+        appendBarText(gd, bar, cd, i, x0, x1, y0, y1);
+
+        if(plotinfo.layerClipId) {
+            Drawing.hideOutsideRangePoint(di, bar.select('text'), xa, ya, trace.xcalendar, trace.ycalendar);
+        }
+    });
+
+    // lastly, clip points groups of `cliponaxis !== false` traces
+    // on `plotinfo._hasClipOnAxisFalse === true` subplots
+    var hasClipOnAxisFalse = cd0.trace.cliponaxis === false;
+    Drawing.setClipUrl(plotGroup, hasClipOnAxisFalse ? null : plotinfo.layerClipId);
 }

@@ -24,6 +24,7 @@ Bar.style = require('./style').style;
 Bar.styleOnSelect = require('./style').styleOnSelect;
 Bar.hoverPoints = require('./hover').hoverPoints;
 Bar.selectPoints = require('./select');
+Bar.animatable = true;
 
 Bar.moduleType = 'trace';
 Bar.name = 'bar';
