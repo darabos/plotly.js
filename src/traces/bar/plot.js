@@ -382,7 +382,8 @@ function plotOne(gd, idx, plotinfo, cd, cdAll, element, transitionOpts) {
 
     var pointGroup = Lib.ensureSingle(plotGroup, 'g', 'points');
 
-    var bars = pointGroup.selectAll('g.point').data(Lib.identity);
+    var bars = pointGroup.selectAll('g.point')
+        .data(Lib.identity, function(d) { return d.p; });
 
     bars.enter().append('g')
         .classed('point', true);
