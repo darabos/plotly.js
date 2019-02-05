@@ -418,8 +418,7 @@ function plotOne(gd, idx, plotinfo, cd, cdAll, element, transitionOpts) {
         }
 
         if(!isNumeric(x0) || !isNumeric(x1) ||
-                !isNumeric(y0) || !isNumeric(y1) ||
-                x0 === x1 || y0 === y1) {
+                !isNumeric(y0) || !isNumeric(y1)) {
             bar.remove();
             return;
         }
